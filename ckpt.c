@@ -17,6 +17,7 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <git2.h>
 
 #define IS_MEM_READABLE(flags) (flags & 0x80)
 #define IS_MEM_WRITABLE(flags) (flags & 0x40)
@@ -31,78 +32,78 @@
 #define SET_STACK_MEMORY(flags) (flags |= 0x08)
 #define SET_CPU_CONTEXT(flags) (flags |= 0x04)
 
-typedef struct {
-	long start_addr;
-	long end_addr;
-	uint8_t mem_flags;
-} meta_data_t;
+ typedef struct {
+ 	long start_addr;
+ 	long end_addr;
+ 	uint8_t mem_flags;
+ } meta_data_t;
 
-void fetch_meta_data(char* buffer, meta_data_t* meta_data) {
-	char *tmp_buffer = strdup(buffer), *addr_range = NULL, *flags = NULL;
-	int index = 0;
+ void fetch_meta_data(char* buffer, meta_data_t* meta_data) {
+ 	char *tmp_buffer = strdup(buffer), *addr_range = NULL, *flags = NULL;
+ 	int index = 0;
 
-	addr_range = strtok(tmp_buffer, " ");
-	flags = strtok(NULL, " ");
+ 	addr_range = strtok(tmp_buffer, " ");
+ 	flags = strtok(NULL, " ");
 
-	meta_data->start_addr = strtol(strtok(addr_range, "-"), NULL, 16);
-	meta_data->end_addr = strtol(strtok(NULL, "-"), NULL, 16);
+ 	meta_data->start_addr = strtol(strtok(addr_range, "-"), NULL, 16);
+ 	meta_data->end_addr = strtol(strtok(NULL, "-"), NULL, 16);
 
-	while (index < strlen(flags)) {
-		switch (flags[index++]) {
-		case 'r':
-			SET_MEM_READABLE(meta_data->mem_flags);
-			break;
-		case 'w':
-			SET_MEM_WRITABLE(meta_data->mem_flags);
-			break;
-		case 'x':
-			SET_MEM_EXECUTABLE(meta_data->mem_flags);
-			break;
-		case 'p':
-			SET_MEM_PRIVATE(meta_data->mem_flags);
-			break;
-		case '-':
-			break;
-		default:
-			printf("\nERROR: Unknown Memory Protection Flag \n");
-			break;
-		}
-	}
+ 	while (index < strlen(flags)) {
+ 		switch (flags[index++]) {
+ 			case 'r':
+ 			SET_MEM_READABLE(meta_data->mem_flags);
+ 			break;
+ 			case 'w':
+ 			SET_MEM_WRITABLE(meta_data->mem_flags);
+ 			break;
+ 			case 'x':
+ 			SET_MEM_EXECUTABLE(meta_data->mem_flags);
+ 			break;
+ 			case 'p':
+ 			SET_MEM_PRIVATE(meta_data->mem_flags);
+ 			break;
+ 			case '-':
+ 			break;
+ 			default:
+ 			printf("\nERROR: Unknown Memory Protection Flag \n");
+ 			break;
+ 		}
+ 	}
 
-	if (strstr(buffer, "stack") != NULL)
-		SET_STACK_MEMORY(meta_data->mem_flags);
+ 	if (strstr(buffer, "stack") != NULL)
+ 		SET_STACK_MEMORY(meta_data->mem_flags);
 
-	free(tmp_buffer);
-}
+ 	free(tmp_buffer);
+ }
 
-void unmap_old_stack() {
-	FILE *in_fd = NULL;
-	char buffer[1024] = { 0 };
-	meta_data_t meta_data = { 0 };
+ void unmap_old_stack() {
+ 	FILE *in_fd = NULL;
+ 	char buffer[1024] = { 0 };
+ 	meta_data_t meta_data = { 0 };
 
-	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
-		printf("ERROR:Failed to open /proc/self/maps: %s\n", strerror(errno));
-		exit(1);
-	}
+ 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
+ 		printf("ERROR:Failed to open /proc/self/maps: %s\n", strerror(errno));
+ 		exit(1);
+ 	}
 
-	while ((fgets(buffer, 1024, in_fd) > 0)) {
-		fetch_meta_data(buffer, &meta_data);
+ 	while ((fgets(buffer, 1024, in_fd) > 0)) {
+ 		fetch_meta_data(buffer, &meta_data);
 
-		if (!IS_STACK_MEMORY(meta_data.mem_flags))
-			goto LOOP;
+ 		if (!IS_STACK_MEMORY(meta_data.mem_flags))
+ 			goto LOOP;
 
-		if (munmap((void*) meta_data.start_addr,
-				(meta_data.end_addr - meta_data.start_addr)) != 0) {
-			printf("ERROR: Failed to unmap original Stack Memory : %s\n",
-					strerror(errno));
-			exit(1);
-		}
+ 		if (munmap((void*) meta_data.start_addr,
+ 			(meta_data.end_addr - meta_data.start_addr)) != 0) {
+ 			printf("ERROR: Failed to unmap original Stack Memory : %s\n",
+ 				strerror(errno));
+ 		exit(1);
+ 	}
 
-		break;
+ 	break;
 
-		LOOP: memset(&meta_data, 0, sizeof(meta_data));
-		memset(buffer, 0, 1024);
-	}
+ 	LOOP: memset(&meta_data, 0, sizeof(meta_data));
+ 	memset(buffer, 0, 1024);
+ }
 }
 
 int get_protection_flags(uint8_t flags) {
@@ -140,7 +141,7 @@ void restore_checkpoint_app_context(char* checkpoint_file) {
 
 	if ((fd = open(checkpoint_file, O_RDONLY)) == -1) {
 		printf("ERROR: Failed to open %s: %s\n", checkpoint_file,
-				strerror(errno));
+			strerror(errno));
 		close(fd);
 		exit(1);
 	}
@@ -150,40 +151,40 @@ void restore_checkpoint_app_context(char* checkpoint_file) {
 			break;
 
 		if ((mem_ptr = mmap((void*) meta_data.start_addr,
-				(meta_data.end_addr - meta_data.start_addr),
-				PROT_WRITE, get_map_flags(meta_data.mem_flags), -1, 0))
-				== MAP_FAILED) {
+			(meta_data.end_addr - meta_data.start_addr),
+			PROT_WRITE, get_map_flags(meta_data.mem_flags), -1, 0))
+			== MAP_FAILED) {
 			printf("ERROR: Failed to create new stack memory\n");
-			exit(1);
-		}
-
-		read(fd, mem_ptr, (meta_data.end_addr - meta_data.start_addr));
-
-		if (mprotect(mem_ptr, (meta_data.end_addr - meta_data.start_addr),
-				get_protection_flags(meta_data.mem_flags)) != 0) {
-			printf("ERROR: Failed to set the memory protection flags\n");
-			exit(1);
-		}
-
-		memset(&meta_data, 0, sizeof(meta_data));
-		mem_ptr = NULL;
-
-	}
-
-	if ((cpu_context = mmap(NULL, sizeof(ucontext_t),
-	PROT_WRITE | PROT_READ | PROT_EXEC,
-	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
-		printf("\nERROR: Failed to create new stack memory: %s\n",
-				strerror(errno));
 		exit(1);
 	}
 
-	read(fd, cpu_context, sizeof(ucontext_t));
-	setcontext(cpu_context);
+	read(fd, mem_ptr, (meta_data.end_addr - meta_data.start_addr));
 
-	printf("\nERROR: Failed to restore checkpointed image :%s\n",
-			strerror(errno));
+	if (mprotect(mem_ptr, (meta_data.end_addr - meta_data.start_addr),
+		get_protection_flags(meta_data.mem_flags)) != 0) {
+		printf("ERROR: Failed to set the memory protection flags\n");
 	exit(1);
+}
+
+memset(&meta_data, 0, sizeof(meta_data));
+mem_ptr = NULL;
+
+}
+
+if ((cpu_context = mmap(NULL, sizeof(ucontext_t),
+	PROT_WRITE | PROT_READ | PROT_EXEC,
+	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
+	printf("\nERROR: Failed to create new stack memory: %s\n",
+		strerror(errno));
+exit(1);
+}
+
+read(fd, cpu_context, sizeof(ucontext_t));
+setcontext(cpu_context);
+
+printf("\nERROR: Failed to restore checkpointed image :%s\n",
+	strerror(errno));
+exit(1);
 }
 
 void restore_memory(char* checkpoint_file) {
@@ -207,6 +208,19 @@ int Write(int fd, const void* buffer, int len)
 	return ret;
 }
 
+static void check_error(int error_code, const char *action)
+{
+  const git_error *error = giterr_last();
+  if (!error_code)
+    return;
+
+  printf("Error %d %s - %s\n", error_code, action,
+       (error && error->message) ? error->message : "???");
+
+  exit(1);
+}
+
+
 void checkpoint() {
 	FILE *in_fd = NULL;
 	int out_fd = -1;
@@ -214,52 +228,71 @@ void checkpoint() {
 	meta_data_t meta_data = { 0 };
 	ucontext_t cpu_context = { 0 };
 
+	struct stat st = {0};
+	int error;
+	
+
 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
 		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
-				strerror(errno));
+			strerror(errno));
 		return;
 	}
+ 
+	git_libgit2_init(); 
 
-	if ((out_fd = open("myckpt", O_WRONLY | O_CREAT | O_TRUNC,
-	S_IRWXU | S_IRGRP | S_IROTH)) == -1) {
+	git_repository *repo; 
+
+	if (stat("ckpt", &st) == -1) {
+		mkdir("ckpt", 0700);
+		error = git_repository_init(&repo,"ckpt", 0);
+		check_error(error, "creating repository");
+	}
+
+
+	error = git_repository_open(&repo, "/home/ubuntu/libgit2-0.24.1/IncrementalCheckpointing/ckpt");
+	check_error(error, "opening repository");
+	
+	
+	if ((out_fd = open("ckpt/myckpt", O_WRONLY | O_CREAT | O_TRUNC,
+		S_IRWXU | S_IRGRP | S_IROTH)) == -1) {
 		printf("\nERROR: Failed to open myckpt: %s\n", strerror(errno));
-		fclose(in_fd);
-		return;
-	}
-
-	while ((fgets(buffer, 1024, in_fd) > 0)) {
-		if (strstr(buffer, "vsyscall") != NULL)
-			goto LOOP;
-
-		fetch_meta_data(buffer, &meta_data);
-
-		if (!IS_MEM_READABLE(meta_data.mem_flags))
-			goto LOOP;
-
-		if( Write(out_fd, (void *)&meta_data, sizeof(meta_data)) < 0)
-			goto EXIT;
-
-		if( Write(out_fd, (void *)meta_data.start_addr,
-				(meta_data.end_addr - meta_data.start_addr)) < 0)
-			goto EXIT;
-
-		LOOP: memset(&meta_data, 0, sizeof(meta_data));
-		memset(buffer, 0, 1024);
-	}
-
-	SET_CPU_CONTEXT(meta_data.mem_flags);
-	if( Write(out_fd, (void *)&meta_data, sizeof(meta_data)) < 0)
-		goto EXIT;;
-
-	if (getcontext(&cpu_context) != 0)
-		printf("\nERROR: Failed to get CPU Context %s\n", strerror(errno));
-	else {
-		write(out_fd, (void *)&cpu_context, sizeof(cpu_context));
-	}
-
-	EXIT:
 	fclose(in_fd);
-	close(out_fd);
+	return;
+}
+
+while ((fgets(buffer, 1024, in_fd) > 0)) {
+	if (strstr(buffer, "vsyscall") != NULL)
+		goto LOOP;
+
+	fetch_meta_data(buffer, &meta_data);
+
+	if (!IS_MEM_READABLE(meta_data.mem_flags))
+		goto LOOP;
+
+	if( Write(out_fd, (void *)&meta_data, sizeof(meta_data)) < 0)
+		goto EXIT;
+
+	if( Write(out_fd, (void *)meta_data.start_addr,
+		(meta_data.end_addr - meta_data.start_addr)) < 0)
+		goto EXIT;
+
+	LOOP: memset(&meta_data, 0, sizeof(meta_data));
+	memset(buffer, 0, 1024);
+}
+
+SET_CPU_CONTEXT(meta_data.mem_flags);
+if( Write(out_fd, (void *)&meta_data, sizeof(meta_data)) < 0)
+	goto EXIT;;
+
+if (getcontext(&cpu_context) != 0)
+	printf("\nERROR: Failed to get CPU Context %s\n", strerror(errno));
+else {
+	write(out_fd, (void *)&cpu_context, sizeof(cpu_context));
+}
+
+EXIT:
+fclose(in_fd);
+close(out_fd);
 }
 
 void handle_checkpointing(int sig_no) {

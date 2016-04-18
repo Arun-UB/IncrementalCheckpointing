@@ -17,9 +17,13 @@ all: clean libckpt hello restart
 
 libckpt:
 	$(CC) $(CFLAGS) -c -o ckpt.o ckpt.c && ar rcs libckpt.a ckpt.o
+
+libckpt2:
+	$(CC) $(CFLAGS) -I ../include/ -L../build/ -I../src -Wall -lgit2 -c -o ckpt.o ckpt.c && ar rcs libckpt.a ckpt.o
+	
 	
 hello:
-	$(CC) $(CFLAGS) -static -L`pwd` -lckpt -Wl,-u,myconstructor hello.c -o hello
+	$(CC) $(CFLAGS) -L`pwd`  -lckpt -L ../build/ -lgit2 -Wl,-u,myconstructor hello.c -o hello
 	
 restart:
 	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt

@@ -110,7 +110,7 @@ void unmap_old_stack() {
 }
 
 int get_protection_flags(uint8_t flags) {
-	int flag = PROT_EXEC;
+	int flag = 0;
 
 	if (IS_MEM_READABLE(flags))
 		flag |= PROT_READ;

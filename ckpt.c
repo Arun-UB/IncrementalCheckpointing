@@ -43,9 +43,10 @@ typedef struct {
 } meta_data_t;
 
 void fetch_meta_data(char* buffer, meta_data_t* meta_data) {
-	char *tmp_buffer = strdup(buffer), *addr_range = NULL, *flags = NULL;
+	char tmp_buffer[1024], *addr_range = NULL, *flags = NULL;
 	int index = 0;
 
+	strncpy(tmp_buffer, buffer, 1024);
 	addr_range = strtok(tmp_buffer, " ");
 	flags = strtok(NULL, " ");
 
@@ -77,184 +78,6 @@ void fetch_meta_data(char* buffer, meta_data_t* meta_data) {
 	if (strstr(buffer, "stack") != NULL)
 		SET_STACK_MEMORY(meta_data->mem_flags);
 
-	free(tmp_buffer);
-}
-
-void unmap_old_stack() {
-	FILE *in_fd = NULL;
-	char buffer[1024] = { 0 };
-	meta_data_t meta_data = { 0 };
-
-	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
-		printf("ERROR:Failed to open /proc/self/maps: %s\n", strerror(errno));
-		exit(1);
-	}
-
-	while ((fgets(buffer, 1024, in_fd) > 0)) {
-		fetch_meta_data(buffer, &meta_data);
-
-		if (!IS_STACK_MEMORY(meta_data.mem_flags))
-			goto LOOP;
-
-		if (munmap((void*) meta_data.start_addr,
-				(meta_data.end_addr - meta_data.start_addr)) != 0) {
-			printf("ERROR: Failed to unmap original Stack Memory : %s\n",
-					strerror(errno));
-			exit(1);
-		}
-
-		break;
-
-		LOOP: memset(&meta_data, 0, sizeof(meta_data));
-		memset(buffer, 0, 1024);
-	}
-}
-
-int get_protection_flags(uint8_t flags) {
-	int flag = PROT_EXEC;
-
-	if (IS_MEM_READABLE(flags))
-		flag |= PROT_READ;
-
-	if (IS_MEM_WRITABLE(flags))
-		flag |= PROT_WRITE;
-
-	if (IS_MEM_EXECUTABLE(flags))
-		flag |= PROT_EXEC;
-
-	return flag;
-}
-
-int get_map_flags(uint8_t flags) {
-	int flag = MAP_ANONYMOUS | MAP_FIXED;
-
-	if (IS_MEM_PRIVATE(flags))
-		flag |= MAP_PRIVATE;
-	else
-		flag |= MAP_SHARED;
-
-	return flag;
-}
-
-void restore_checkpoint_cpu_context(char* checkpoint_file) {
-
-	int fd = -1;
-	meta_data_t meta_data = { 0 };
-	ucontext_t *cpu_context = NULL;
-
-	if ((fd = open(checkpoint_file, O_RDONLY)) == -1) {
-		printf("ERROR: Failed to open %s: %s\n", checkpoint_file,
-				strerror(errno));
-		close(fd);
-		exit(1);
-	}
-
-	if ((read(fd, &meta_data, sizeof(meta_data)) > 0)
-			&& !IS_CPU_CONTEXT(meta_data.mem_flags)) {
-		printf("Invalid CPU Context File!!\n");
-		exit(1);
-	}
-
-	if ((cpu_context = mmap(NULL, sizeof(ucontext_t),
-	PROT_WRITE | PROT_READ | PROT_EXEC,
-	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
-		printf("\nERROR: Failed to create new stack memory: %s\n",
-				strerror(errno));
-		exit(1);
-	}
-
-	read(fd, cpu_context, sizeof(ucontext_t));
-	setcontext(cpu_context);
-
-	printf("\nERROR: Failed to restore checkpointed image :%s\n",
-			strerror(errno));
-	exit(1);
-
-}
-
-void restore_checkpoint_app_context(char* checkpoint_file) {
-	int fd = -1;
-	void* mem_ptr = NULL;
-	meta_data_t meta_data = { 0 };
-
-	if ((fd = open(checkpoint_file, O_RDONLY)) == -1) {
-		printf("ERROR: Failed to open %s: %s\n", checkpoint_file,
-				strerror(errno));
-		close(fd);
-		exit(1);
-	}
-
-	while (read(fd, &meta_data, sizeof(meta_data)) > 0) {
-
-		if ((mem_ptr = mmap((void*) meta_data.start_addr,
-				(meta_data.end_addr - meta_data.start_addr),
-				PROT_WRITE, get_map_flags(meta_data.mem_flags), -1, 0))
-				== MAP_FAILED) {
-			printf("ERROR: Failed to create new stack memory\n");
-			exit(1);
-		}
-
-		read(fd, mem_ptr, (meta_data.end_addr - meta_data.start_addr));
-
-		if (mprotect(mem_ptr, (meta_data.end_addr - meta_data.start_addr),
-				get_protection_flags(meta_data.mem_flags)) != 0) {
-			printf("ERROR: Failed to set the memory protection flags\n");
-			exit(1);
-		}
-
-		memset(&meta_data, 0, sizeof(meta_data));
-		mem_ptr = NULL;
-
-	}
-}
-
-void restore_checkpoint(char* checkpoint_dir) {
-
-	FTS *ftsp;
-	FTSENT *p, *chp;
-	int fts_options = FTS_COMFOLLOW | FTS_LOGICAL | FTS_NOCHDIR;
-
-	if ((ftsp = fts_open((char* const *) checkpoint_dir, fts_options, NULL))
-			== NULL) {
-		printf("fts_open failed\n");
-		exit(1);
-	}
-	/* Initialize ftsp with as many argv[] parts as possible. */
-	chp = fts_children(ftsp, 0);
-	if (chp == NULL) {
-		printf("fts_children failed\n");
-		return; /* no files to traverse */
-	}
-	while ((p = fts_read(ftsp)) != NULL) {
-		switch (p->fts_info) {
-		case FTS_D:
-			printf("directory %s/%s\n", p->fts_path, p->fts_name);
-			break;
-		case FTS_F:
-			if (strstr(p->fts_name, "cpu_context"))
-				continue;
-
-			char checkpoint_file[MAX_STRING_LEN] = { 0 };
-			snprintf(checkpoint_file, MAX_STRING_LEN, "%s/%s", p->fts_path,
-					p->fts_name);
-			restore_checkpoint_app_context(checkpoint_file);
-
-			break;
-		default:
-			break;
-		}
-	}
-	fts_close(ftsp);
-
-	char checkpoint_file[MAX_STRING_LEN] = { 0 };
-	snprintf(checkpoint_file, MAX_STRING_LEN, "%s/cpu_context", checkpoint_dir);
-	restore_checkpoint_app_context(checkpoint_file);
-
-}
-
-void restore_memory(char* checkpoint_file) {
-	unmap_old_stack();
-	restore_checkpoint(checkpoint_file);
 }
 
 int Write(int fd, const void* buffer, int len) {
@@ -363,25 +186,53 @@ static void commit_changes(git_repository* repo) {
 	git_tree_free(tree_cmt);
 }
 
-void checkpoint() {
-	FILE *in_fd = NULL;
+void verify_checkpoint_dir(char* checkpoint_dir, git_repository * repo) {
+	FILE* in_fd;
+	struct stat st = { 0 };
 	char buffer[1024] = { 0 };
 	meta_data_t meta_data = { 0 };
-	ucontext_t cpu_context = { 0 };
-	git_repository *repo = NULL;
-	git_oid oid_blob; /* the SHA1 for our blob in the tree */
-
-	struct stat st = { 0 };
-	int error;
-
-	char ckpt_dir_fqdn[MAX_STRING_LEN] = { 0 };
-	snprintf(ckpt_dir_fqdn, MAX_STRING_LEN, "/tmp/ckpt_%d", getpid());
 
 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
 		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
 				strerror(errno));
 		return;
 	}
+
+	while ((fgets(buffer, 1024, in_fd) > 0)) {
+		if (strstr(buffer, "vsyscall") != NULL)
+			goto LOOP;
+
+		fetch_meta_data(buffer, &meta_data);
+
+		if (!IS_MEM_READABLE(meta_data.mem_flags))
+			goto LOOP;
+
+		char file_path[128] = { 0 };
+		snprintf(file_path, 128, "%s/%lx-%lx", checkpoint_dir,
+				meta_data.start_addr, meta_data.end_addr);
+		if (stat(file_path, &st) == -1) {
+			printf("Error: File doesn't exist: %s\n", file_path);
+			dump_to_checkpoint_file(&meta_data, (void*) meta_data.start_addr,
+					(meta_data.end_addr - meta_data.start_addr), file_path);
+
+			git_oid oid_blob;
+			int error;
+
+			error = git_blob_create_fromdisk(&oid_blob, repo, file_path);
+			check_error(error, "creating blob");
+
+			commit_changes(repo);
+			verify_checkpoint_dir(checkpoint_dir, repo);
+		}
+
+		LOOP: memset(&meta_data, 0, sizeof(meta_data));
+		memset(buffer, 0, 1024);
+	}
+}
+
+void get_git_repository(char* ckpt_dir_fqdn, git_repository** repo) {
+	struct stat st = { 0 };
+	int error;
 
 	if (stat(ckpt_dir_fqdn, &st) == -1) {
 		git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
@@ -390,14 +241,37 @@ void checkpoint() {
 		opts.flags |= GIT_REPOSITORY_INIT_MKPATH; /* mkdir as needed to create repo */
 		opts.description = "My repository has a custom description";
 
-		error = git_repository_init_ext(&repo, ckpt_dir_fqdn, &opts);
+		error = git_repository_init_ext(repo, ckpt_dir_fqdn, &opts);
 		check_error(error, "creating repository");
 
 	} else {
 		char repo_path[MAX_STRING_LEN] = { 0 };
 		snprintf(repo_path, MAX_STRING_LEN, "%s/.git", ckpt_dir_fqdn);
-		error = git_repository_open(&repo, repo_path);
+		error = git_repository_open(repo, repo_path);
 		check_error(error, "opening repository");
+	}
+}
+
+void checkpoint() {
+	FILE *in_fd = NULL;
+	char buffer[1024] = { 0 };
+	meta_data_t meta_data = { 0 };
+	ucontext_t cpu_context = { 0 };
+	git_repository *repo = NULL;
+	git_oid oid_blob; /* the SHA1 for our blob in the tree */
+
+	int error;
+
+	char ckpt_dir_fqdn[MAX_STRING_LEN] = { 0 };
+	snprintf(ckpt_dir_fqdn, MAX_STRING_LEN, "/tmp/ckpt_%d", getpid());
+
+	git_libgit2_init();
+	get_git_repository(ckpt_dir_fqdn, &repo);
+
+	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
+		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
+				strerror(errno));
+		return;
 	}
 
 	while ((fgets(buffer, 1024, in_fd) > 0)) {
@@ -410,7 +284,8 @@ void checkpoint() {
 			goto LOOP;
 
 		char blob_file_name[MAX_STRING_LEN] = { 0 };
-		snprintf(blob_file_name, MAX_STRING_LEN, "%ld", meta_data.start_addr);
+		snprintf(blob_file_name, MAX_STRING_LEN, "%lx-%lx",
+				meta_data.start_addr, meta_data.end_addr);
 
 		char output_file[MAX_STRING_LEN] = { 0 };
 		snprintf(output_file, MAX_STRING_LEN, "%s/%s", ckpt_dir_fqdn,
@@ -426,14 +301,20 @@ void checkpoint() {
 		memset(buffer, 0, 1024);
 	}
 
-	char output_file[128] = { 0 };
-	snprintf(output_file, 128, "%s/cpu_context", ckpt_dir_fqdn);
-
 	SET_CPU_CONTEXT(meta_data.mem_flags);
 	if (getcontext(&cpu_context) != 0) {
 		printf("\nERROR: Failed to get CPU Context %d\n", errno);
-		goto EXIT;
+		fclose(in_fd);
+		return;
 	}
+
+	ucontext_t tmp_context = {0};
+	if( !memcmp(&cpu_context, &tmp_context, sizeof(ucontext_t) ) ){
+		return;
+	}
+
+	char output_file[128] = { 0 };
+	snprintf(output_file, 128, "%s/cpu_context", ckpt_dir_fqdn);
 
 	dump_to_checkpoint_file(&meta_data, (void *) &cpu_context,
 			sizeof(cpu_context), output_file);
@@ -442,16 +323,17 @@ void checkpoint() {
 	check_error(error, "creating blob");
 
 	commit_changes(repo);
-
-	EXIT: fclose(in_fd);
+	fclose(in_fd);
+	return;
 }
 
 void handle_checkpointing(int sig_no) {
+	git_libgit2_init();
 	checkpoint();
+	git_libgit2_shutdown();
 }
 
 __attribute__((constructor))void myconstructor() {
-	git_libgit2_init();
 	signal(SIGUSR2, handle_checkpointing);
 
 }

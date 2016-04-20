@@ -1,4 +1,4 @@
-CFLAGS = -g -std=gnu99
+CFLAGS = -g -std=gnu99 -fno-stack-protector
 CC = gcc
 
 default: all 
@@ -28,7 +28,7 @@ hello:
 	$(CC) $(CFLAGS) -L`pwd` -lckpt -lgit2 -Wl,-u,myconstructor hello.c -o hello
 	
 restart:
-	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt3 -lc
+	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt3 
 
 clean:
 	rm -rf hello myrestart libckpt.a *.o myckpt

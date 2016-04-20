@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <git2.h>
+#include <fts.h>
 
 #define IS_MEM_READABLE(flags) (flags & 0x80)
 #define IS_MEM_WRITABLE(flags) (flags & 0x40)
@@ -135,9 +136,9 @@ int get_map_flags(uint8_t flags) {
 	return flag;
 }
 
-void restore_checkpoint_app_context(char* checkpoint_file) {
+void restore_checkpoint_cpu_context(char* checkpoint_file) {
+
 	int fd = -1;
-	void* mem_ptr = NULL;
 	meta_data_t meta_data = { 0 };
 	ucontext_t *cpu_context = NULL;
 
@@ -148,9 +149,42 @@ void restore_checkpoint_app_context(char* checkpoint_file) {
 		exit(1);
 	}
 
+	if ((read(fd, &meta_data, sizeof(meta_data)) > 0)
+			&& !IS_CPU_CONTEXT(meta_data.mem_flags)) {
+		printf("Invalid CPU Context File!!\n");
+		exit(1);
+	}
+
+	if ((cpu_context = mmap(NULL, sizeof(ucontext_t),
+	PROT_WRITE | PROT_READ | PROT_EXEC,
+	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
+		printf("\nERROR: Failed to create new stack memory: %s\n",
+				strerror(errno));
+		exit(1);
+	}
+
+	read(fd, cpu_context, sizeof(ucontext_t));
+	setcontext(cpu_context);
+
+	printf("\nERROR: Failed to restore checkpointed image :%s\n",
+			strerror(errno));
+	exit(1);
+
+}
+
+void restore_checkpoint_app_context(char* checkpoint_file) {
+	int fd = -1;
+	void* mem_ptr = NULL;
+	meta_data_t meta_data = { 0 };
+
+	if ((fd = open(checkpoint_file, O_RDONLY)) == -1) {
+		printf("ERROR: Failed to open %s: %s\n", checkpoint_file,
+				strerror(errno));
+		close(fd);
+		exit(1);
+	}
+
 	while (read(fd, &meta_data, sizeof(meta_data)) > 0) {
-		if ( IS_CPU_CONTEXT(meta_data.mem_flags))
-			break;
 
 		if ((mem_ptr = mmap((void*) meta_data.start_addr,
 				(meta_data.end_addr - meta_data.start_addr),
@@ -172,34 +206,62 @@ void restore_checkpoint_app_context(char* checkpoint_file) {
 		mem_ptr = NULL;
 
 	}
+}
 
-	if ((cpu_context = mmap(NULL, sizeof(ucontext_t),
-	PROT_WRITE | PROT_READ | PROT_EXEC,
-	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED) {
-		printf("\nERROR: Failed to create new stack memory: %s\n",
-				strerror(errno));
+void restore_checkpoint(char* checkpoint_dir) {
+
+	FTS *ftsp;
+	FTSENT *p, *chp;
+	int fts_options = FTS_COMFOLLOW | FTS_LOGICAL | FTS_NOCHDIR;
+
+	if ((ftsp = fts_open((char* const *) checkpoint_dir, fts_options, NULL))
+			== NULL) {
+		printf("fts_open failed\n");
 		exit(1);
 	}
+	/* Initialize ftsp with as many argv[] parts as possible. */
+	chp = fts_children(ftsp, 0);
+	if (chp == NULL) {
+		printf("fts_children failed\n");
+		return; /* no files to traverse */
+	}
+	while ((p = fts_read(ftsp)) != NULL) {
+		switch (p->fts_info) {
+		case FTS_D:
+			printf("directory %s/%s\n", p->fts_path, p->fts_name);
+			break;
+		case FTS_F:
+			if (strstr(p->fts_name, "cpu_context"))
+				continue;
 
-	read(fd, cpu_context, sizeof(ucontext_t));
-	setcontext(cpu_context);
+			char checkpoint_file[MAX_STRING_LEN] = { 0 };
+			snprintf(checkpoint_file, MAX_STRING_LEN, "%s/%s", p->fts_path,
+					p->fts_name);
+			restore_checkpoint_app_context(checkpoint_file);
 
-	printf("\nERROR: Failed to restore checkpointed image :%s\n",
-			strerror(errno));
-	exit(1);
+			break;
+		default:
+			break;
+		}
+	}
+	fts_close(ftsp);
+
+	char checkpoint_file[MAX_STRING_LEN] = { 0 };
+	snprintf(checkpoint_file, MAX_STRING_LEN, "%s/cpu_context", checkpoint_dir);
+	restore_checkpoint_app_context(checkpoint_file);
+
 }
 
 void restore_memory(char* checkpoint_file) {
 	unmap_old_stack();
-	restore_checkpoint_app_context(checkpoint_file);
+	restore_checkpoint(checkpoint_file);
 }
 
 int Write(int fd, const void* buffer, int len) {
 	int ret = -1;
 	while ((ret = write(fd, buffer, len)) != len) {
 		if (ret < 0) {
-			printf("\nERROR: Failed to write to checkpoint image: %s\n",
-					strerror(errno));
+			printf("\nERROR: Failed to write to checkpoint image: %d\n", ret);
 			return ret;
 		}
 		len -= ret;
@@ -216,31 +278,31 @@ static void check_error(int error_code, const char *action) {
 	printf("Error %d %s - %s\n", error_code, action,
 			(error && error->message) ? error->message : "???");
 
-	exit(1);
+	return;
 }
 
-static void dump_to_checkpoint_file(meta_data_t* meta_data, void* data, int len,
+static int dump_to_checkpoint_file(meta_data_t* meta_data, void* data, int len,
 		char* output_file) {
 	int out_fd;
-
 	if ((out_fd = open(output_file,
 	O_WRONLY | O_CREAT | O_TRUNC,
 	S_IRWXU | S_IRGRP | S_IROTH)) == -1) {
-		printf("\nERROR: Failed to open ckpt file: %s\n", strerror(errno));
-		exit(1);
+		printf("\nERROR: Failed to open ckpt file: %d\n", errno);
+		return errno;
 	}
 
-	if (Write(out_fd, (void *) meta_data, sizeof(meta_data)) < 0) {
-		printf("\nERROR: Failed to write to ckpt file: %s\n", strerror(errno));
-		exit(1);
+	if (Write(out_fd, (void *) meta_data, sizeof(meta_data_t)) < 0) {
+		printf("\nERROR: Failed to write to ckpt file: %d\n", errno);
+		return errno;
 	}
 
 	if (Write(out_fd, (void *) data, len) < 0) {
-		printf("\nERROR: Failed to open ckpt file: %s\n", strerror(errno));
-		exit(1);
+		printf("\nERROR: Failed to open ckpt file: %d\n", errno);
+		return errno;
 	}
 
 	close(out_fd);
+	return 0;
 
 }
 
@@ -287,7 +349,7 @@ static void commit_changes(git_repository* repo) {
 
 		parent_count = 1;
 		snprintf(checkpoint_message, MAX_STRING_LEN,
-						"Incremental checkpoint %d", checkpoint_no);
+				"Incremental checkpoint %d", checkpoint_no);
 		checkpoint_no++;
 	} else {
 		snprintf(checkpoint_message, MAX_STRING_LEN, "Initial checkpoint");
@@ -364,22 +426,23 @@ void checkpoint() {
 		memset(buffer, 0, 1024);
 	}
 
-	char output_file[MAX_STRING_LEN] = { 0 };
-	snprintf(output_file, MAX_STRING_LEN, "%s/cpu_context", ckpt_dir_fqdn);
+	char output_file[128] = { 0 };
+	snprintf(output_file, 128, "%s/cpu_context", ckpt_dir_fqdn);
 
 	SET_CPU_CONTEXT(meta_data.mem_flags);
 	if (getcontext(&cpu_context) != 0) {
-		printf("\nERROR: Failed to get CPU Context %s\n", strerror(errno));
+		printf("\nERROR: Failed to get CPU Context %d\n", errno);
 		goto EXIT;
-	} else {
-		dump_to_checkpoint_file(&meta_data, (void *) &cpu_context,
-				sizeof(cpu_context), output_file);
 	}
+
+	dump_to_checkpoint_file(&meta_data, (void *) &cpu_context,
+			sizeof(cpu_context), output_file);
 
 	error = git_blob_create_fromdisk(&oid_blob, repo, output_file);
 	check_error(error, "creating blob");
 
 	commit_changes(repo);
+
 	EXIT: fclose(in_fd);
 }
 

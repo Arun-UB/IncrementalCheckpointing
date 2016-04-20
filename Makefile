@@ -13,7 +13,7 @@ run_restart:
 	(sleep 3 &&  pkill -9 -n myrestart) &
 	./myrestart myckpt; true
 
-all: clean libckpt2 hello
+all: clean libckpt2 libckpt3 hello restart
 
 libckpt:
 	$(CC) $(CFLAGS) -c -o ckpt.o ckpt.c && ar rcs libckpt.a ckpt.o
@@ -21,12 +21,14 @@ libckpt:
 libckpt2:
 	$(CC) $(CFLAGS) -I/usr/local/include/ -Wall -c -o ckpt.o ckpt.c && ar rcs libckpt.a ckpt.o
 	
+libckpt3:
+	$(CC) $(CFLAGS) -I/usr/local/include/ -Wall -c -o ckpt_restart.o ckpt_restart.c && ar rcs libckpt3.a ckpt_restart.o
 	
 hello:
 	$(CC) $(CFLAGS) -L`pwd` -lckpt -lgit2 -Wl,-u,myconstructor hello.c -o hello
 	
 restart:
-	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt
+	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt3 -lc
 
 clean:
 	rm -rf hello myrestart libckpt.a *.o myckpt

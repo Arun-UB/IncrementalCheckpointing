@@ -173,6 +173,35 @@ int create_remote_repo(char* repo_name, char* web_url) {
 	return ret;
 }
 
+void http_post_message(char* data, char* url) {
+
+	CURL *curl;
+	CURLcode res;
+	char response[4096] = { 0 };
+
+	curl = curl_easy_init();
+	if (curl) {
+		curl_easy_setopt(curl, CURLOPT_URL, url);
+		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) strlen(data));
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, function_pt);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+		// Perform the request, res will get the return code
+		res = curl_easy_perform(curl);
+
+		// Check for errors
+		if (res != CURLE_OK) {
+			fprintf(stderr, "curl_easy_perform() failed: %s\n",
+					curl_easy_strerror(res));
+		}
+
+		// always cleanup
+		curl_easy_cleanup(curl);
+	}
+}
+
 void set_remote_url(git_repository* repo) {
 	int ret = 0;
 
@@ -368,14 +397,20 @@ void get_git_repository(char* ckpt_file_name, git_repository** repo,
 		strcat(web_url, ".git");
 		set_remote_url(*repo);
 
-	} else if(globbuf.gl_pathc == 1){
+		char data[MAX_STRING_LEN] = { 0 };
+		snprintf(data, MAX_STRING_LEN, "name:%s&url:%s", ckpt_file_name,
+				web_url);
+		http_post_message(data,
+				"http://ec2-54-152-136-159.compute-1.amazonaws.com:3000/sync/init");
+
+	} else if (globbuf.gl_pathc == 1) {
 		strncpy(ckpt_dir_fqdn, globbuf.gl_pathv[0], MAX_STRING_LEN);
 		char repo_path[MAX_STRING_LEN] = { 0 };
 		snprintf(repo_path, MAX_STRING_LEN, "%s/.git", globbuf.gl_pathv[0]);
 		error = git_repository_open(repo, repo_path);
 		check_error(error, "opening repository");
 		set_remote_url(*repo);
-	} else{
+	} else {
 		printf("Error: Exiting!!\n");
 		exit(1);
 	}
@@ -464,13 +499,41 @@ void checkpoint() {
 
 	return;
 }
+
 void handle_checkpointing(int sig_no) {
 	git_libgit2_init();
 	checkpoint();
 	git_libgit2_shutdown();
 }
 
+void get_ckpt_filename(char* file_name){
+	glob_t globbuf;
+	char pattern[MAX_STRING_LEN] = { 0 };
+
+	snprintf(pattern, MAX_STRING_LEN, "/tmp/ckpt_%d_*", getpid());
+	if (glob(pattern, GLOB_ONLYDIR, NULL, &globbuf) == 0 &&
+			globbuf.gl_pathc == 1){
+		char* token = NULL;
+		strtok(globbuf.gl_pathv[0], "/");
+		while( (token = strtok(NULL, "/")) != NULL)
+			strncpy(file_name, token, MAX_STRING_LEN);
+	}
+
+}
+
+void handle_live_migration(int sig_no) {
+	checkpoint();
+
+	char data[MAX_STRING_LEN] = { 0 }, ckpt_file_name[MAX_STRING_LEN] ={0};
+	get_ckpt_filename(ckpt_file_name);
+	snprintf(data, MAX_STRING_LEN, "name:%s&url:%s", ckpt_file_name , web_url);
+	http_post_message(data,
+			"http://ec2-54-152-136-159.compute-1.amazonaws.com:3000/sync/restart");
+
+}
+
 __attribute__((constructor))void myconstructor() {
 	signal(SIGUSR2, handle_checkpointing);
+	signal(SIGUSR1, handle_live_migration);
 
 }

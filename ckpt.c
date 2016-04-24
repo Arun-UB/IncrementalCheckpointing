@@ -20,6 +20,9 @@
 #include <time.h>
 #include <git2.h>
 #include <fts.h>
+#include <curl/curl.h>
+#include <jansson.h>
+#include <glob.h>
 
 #define IS_MEM_READABLE(flags) (flags & 0x80)
 #define IS_MEM_WRITABLE(flags) (flags & 0x40)
@@ -41,6 +44,9 @@ typedef struct {
 	long end_addr;
 	uint8_t mem_flags;
 } meta_data_t;
+
+char web_url[256];
+#define CHECKPOINT_DIR_PATH "/tmp"
 
 void fetch_meta_data(char* buffer, meta_data_t* meta_data) {
 	char tmp_buffer[1024], *addr_range = NULL, *flags = NULL;
@@ -102,6 +108,116 @@ static void check_error(int error_code, const char *action) {
 			(error && error->message) ? error->message : "???");
 
 	return;
+}
+
+size_t function_pt(void *ptr, size_t size, size_t nmemb, void *stream) {
+	strncat(stream, ptr, nmemb);
+	return size * nmemb;
+}
+
+int create_remote_repo(char* repo_name, char* web_url) {
+	CURL *curl;
+	CURLcode res;
+	char buffer[1024] = { 0 };
+	char response[4096] = { 0 };
+	int ret = 0;
+
+	snprintf(buffer, 1024,
+			"name=%s&private_token=JtjTzjkku3npH3tMRnx4&public=true",
+			repo_name);
+	curl = curl_easy_init();
+	if (curl) {
+		curl_easy_setopt(curl, CURLOPT_URL,
+				"http://ec2-54-152-38-69.compute-1.amazonaws.com/api/v3/projects");
+		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buffer);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) strlen(buffer));
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, function_pt);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+		// Perform the request, res will get the return code
+		res = curl_easy_perform(curl);
+
+		// Check for errors
+		if (res != CURLE_OK) {
+			fprintf(stderr, "curl_easy_perform() failed: %s\n",
+					curl_easy_strerror(res));
+			ret = -1;
+		}
+
+		// always cleanup
+		curl_easy_cleanup(curl);
+	}
+
+	if (strcmp(response, "")) {
+		json_t *root, *data;
+		json_error_t error;
+
+		root = json_loads(response, 0, &error);
+
+		if (!root) {
+			fprintf(stderr, "error: on line %d: %s\n", error.line, error.text);
+			return -1;
+		}
+
+		data = json_object_get(root, "web_url");
+		if (!json_is_string(data)) {
+			fprintf(stderr, "error: message is not a string\n");
+			json_decref(root);
+		} else {
+			strcpy(web_url, json_string_value(data));
+			json_decref(root);
+		}
+	}
+
+	return ret;
+}
+
+void set_remote_url(git_repository* repo) {
+	int ret = 0;
+
+	ret = git_remote_set_pushurl(repo, "origin", web_url);
+	check_error(ret, "git_remote_set_pushurl");
+
+	ret = git_remote_set_url(repo, "origin", web_url);
+	check_error(ret, "git_remote_set_url");
+}
+
+int cred_acquire_cb(git_cred** cred, const char* url,
+		unsigned int allowed_types, void* payload) {
+	return git_cred_userpass_plaintext_new(cred, "root", "Qwerty12");
+}
+
+int push_to_remote_repo(git_repository* repo) {
+	git_remote *remote = { 0 };
+	int ret;
+
+	ret = git_remote_lookup(&remote, repo, "origin");
+	check_error(ret, "git_remote_lookup");
+
+	git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
+	cb.credentials = (git_cred_acquire_cb) cred_acquire_cb;
+
+	ret = git_remote_connect(remote, GIT_DIRECTION_PUSH, &cb, NULL);
+	check_error(ret, "git_remote_connect");
+
+	// add a push refspec
+	ret = git_remote_add_push(repo, "origin",
+			"refs/heads/master:refs/heads/master");
+	check_error(ret, "git_remote_add_push");
+
+	// configure options
+	git_push_options options;
+	ret = git_push_init_options(&options, GIT_PUSH_OPTIONS_VERSION);
+	check_error(ret, "git_push_init_options");
+
+	// do the push
+	char* refs = "refs/heads/master";
+	git_strarray refs_array = { &refs, 1 };
+	ret = git_remote_upload(remote, &refs_array, &options);
+	check_error(ret, "git_remote_upload");
+
+	return 0;
 }
 
 static int dump_to_checkpoint_file(meta_data_t* meta_data, void* data, int len,
@@ -230,26 +346,41 @@ void verify_checkpoint_dir(char* checkpoint_dir, git_repository * repo) {
 	}
 }
 
-void get_git_repository(char* ckpt_dir_fqdn, git_repository** repo) {
-	struct stat st = { 0 };
+void get_git_repository(char* ckpt_file_name, git_repository** repo,
+		char* pattern, char* ckpt_dir_fqdn) {
 	int error;
+	glob_t globbuf;
 
-	if (stat(ckpt_dir_fqdn, &st) == -1) {
+	if (glob(pattern, GLOB_ONLYDIR, NULL, &globbuf) != 0) {
 		git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
 
 		/* Customize options */
 		opts.flags |= GIT_REPOSITORY_INIT_MKPATH; /* mkdir as needed to create repo */
 		opts.description = "My repository has a custom description";
 
-		error = git_repository_init_ext(repo, ckpt_dir_fqdn, &opts);
+		char repo_path[MAX_STRING_LEN] = { 0 };
+		snprintf(repo_path, MAX_STRING_LEN, "%s/%s", CHECKPOINT_DIR_PATH,
+				ckpt_file_name);
+		error = git_repository_init_ext(repo, repo_path, &opts);
 		check_error(error, "creating repository");
 
-	} else {
+		create_remote_repo(ckpt_file_name, web_url);
+		strcat(web_url, ".git");
+		set_remote_url(*repo);
+
+	} else if(globbuf.gl_pathc == 1){
+		strncpy(ckpt_dir_fqdn, globbuf.gl_pathv[0], MAX_STRING_LEN);
 		char repo_path[MAX_STRING_LEN] = { 0 };
-		snprintf(repo_path, MAX_STRING_LEN, "%s/.git", ckpt_dir_fqdn);
+		snprintf(repo_path, MAX_STRING_LEN, "%s/.git", globbuf.gl_pathv[0]);
 		error = git_repository_open(repo, repo_path);
 		check_error(error, "opening repository");
+		set_remote_url(*repo);
+	} else{
+		printf("Error: Exiting!!\n");
+		exit(1);
 	}
+
+	globfree(&globbuf);
 }
 
 void checkpoint() {
@@ -259,14 +390,19 @@ void checkpoint() {
 	ucontext_t cpu_context = { 0 };
 	git_repository *repo = NULL;
 	git_oid oid_blob; /* the SHA1 for our blob in the tree */
-
 	int error;
-
-	char ckpt_dir_fqdn[MAX_STRING_LEN] = { 0 };
-	snprintf(ckpt_dir_fqdn, MAX_STRING_LEN, "/tmp/ckpt_%d", getpid());
+	char ckpt_dir_fqdn[MAX_STRING_LEN] = { 0 }, ckpt_file_name[MAX_STRING_LEN] =
+			{ 0 }, pattern[MAX_STRING_LEN] = { 0 };
 
 	git_libgit2_init();
-	get_git_repository(ckpt_dir_fqdn, &repo);
+
+	snprintf(ckpt_file_name, MAX_STRING_LEN, "ckpt_%d_%u", getpid(),
+			(unsigned) time(NULL));
+	snprintf(ckpt_dir_fqdn, MAX_STRING_LEN, "%s/%s", CHECKPOINT_DIR_PATH,
+			ckpt_file_name);
+	snprintf(pattern, MAX_STRING_LEN, "/tmp/ckpt_%d_*", getpid());
+
+	get_git_repository(ckpt_file_name, &repo, pattern, ckpt_dir_fqdn);
 
 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
 		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
@@ -308,8 +444,8 @@ void checkpoint() {
 		return;
 	}
 
-	ucontext_t tmp_context = {0};
-	if( !memcmp(&cpu_context, &tmp_context, sizeof(ucontext_t) ) ){
+	ucontext_t tmp_context = { 0 };
+	if (!memcmp(&cpu_context, &tmp_context, sizeof(ucontext_t))) {
 		return;
 	}
 
@@ -323,10 +459,11 @@ void checkpoint() {
 	check_error(error, "creating blob");
 
 	commit_changes(repo);
+	push_to_remote_repo(repo);
 	fclose(in_fd);
+
 	return;
 }
-
 void handle_checkpointing(int sig_no) {
 	git_libgit2_init();
 	checkpoint();

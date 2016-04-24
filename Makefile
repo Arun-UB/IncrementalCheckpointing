@@ -25,7 +25,7 @@ libckpt3:
 	$(CC) $(CFLAGS) -I/usr/local/include/ -Wall -c -o ckpt_restart.o ckpt_restart.c && ar rcs libckpt3.a ckpt_restart.o
 	
 hello:
-	$(CC) $(CFLAGS) -L`pwd` -lckpt -lgit2 -Wl,-u,myconstructor hello.c -o hello
+	$(CC) $(CFLAGS) -L`pwd` -lckpt -lgit2 -lcurl -ljansson -Wl,-u,myconstructor hello.c -o hello
 	
 restart:
 	$(CC) $(CFLAGS) -static -Wl,-Ttext-segment=5000000 -Wl,-Tdata=5100000 -Wl,-Tbss=5200000 myrestart.c -o myrestart -L`pwd` -lckpt3 

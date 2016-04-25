@@ -116,7 +116,7 @@ size_t function_pt(void *ptr, size_t size, size_t nmemb, void *stream) {
 }
 
 int create_remote_repo(char* repo_name, char* web_url) {
-	CURL *curl;
+	CURL *curl= NULL;
 	CURLcode res;
 	char buffer[1024] = { 0 };
 	char response[4096] = { 0 };
@@ -150,7 +150,7 @@ int create_remote_repo(char* repo_name, char* web_url) {
 	}
 
 	if (strcmp(response, "")) {
-		json_t *root, *data;
+		json_t *root= NULL, *data= NULL;
 		json_error_t error;
 
 		root = json_loads(response, 0, &error);
@@ -175,7 +175,7 @@ int create_remote_repo(char* repo_name, char* web_url) {
 
 void http_post_message(char* data, char* url) {
 
-	CURL *curl;
+	CURL *curl= NULL;
 	CURLcode res;
 	char response[4096] = { 0 };
 
@@ -276,11 +276,11 @@ static int dump_to_checkpoint_file(meta_data_t* meta_data, void* data, int len,
 
 static void commit_changes(git_repository* repo) {
 	int rc; /* return code for git_ functions */
-	git_oid oid_tree; /* the SHA1 for our tree in the commit */
-	git_tree * tree_cmt; /* our tree in the commit */
-	git_signature *author;
-	git_oid oid_commit; /* the SHA1 for our initial commit */
-	git_index *index;
+	git_oid oid_tree= {.id= {0} }; /* the SHA1 for our tree in the commit */
+	git_tree * tree_cmt= NULL; /* our tree in the commit */
+	git_signature *author =NULL;
+	git_oid oid_commit= {.id= {0} }; /* the SHA1 for our initial commit */
+	git_index *index=NULL;
 	char checkpoint_message[MAX_STRING_LEN] = { 0 };
 	static int checkpoint_no = 0;
 
@@ -306,7 +306,7 @@ static void commit_changes(git_repository* repo) {
 	int parent_count = 0;
 
 	if (checkpoint_no) {
-		git_oid oid_parent_commit; /* the SHA1 for last commit */
+		git_oid oid_parent_commit= {.id= {0} }; /* the SHA1 for last commit */
 
 		/* resolve HEAD into a SHA1 */
 		rc = git_reference_name_to_id(&oid_parent_commit, repo, "HEAD");
@@ -332,7 +332,7 @@ static void commit_changes(git_repository* repo) {
 }
 
 void verify_checkpoint_dir(char* checkpoint_dir, git_repository * repo) {
-	FILE* in_fd;
+	FILE* in_fd = NULL;
 	struct stat st = { 0 };
 	char buffer[1024] = { 0 };
 	meta_data_t meta_data = { 0 };
@@ -360,7 +360,7 @@ void verify_checkpoint_dir(char* checkpoint_dir, git_repository * repo) {
 			dump_to_checkpoint_file(&meta_data, (void*) meta_data.start_addr,
 					(meta_data.end_addr - meta_data.start_addr), file_path);
 
-			git_oid oid_blob;
+			git_oid oid_blob= {.id= {0} } ;
 			int error;
 
 			error = git_blob_create_fromdisk(&oid_blob, repo, file_path);
@@ -375,10 +375,11 @@ void verify_checkpoint_dir(char* checkpoint_dir, git_repository * repo) {
 	}
 }
 
-void get_git_repository(char* ckpt_file_name, git_repository** repo,
+int get_git_repository(char* ckpt_file_name, git_repository** repo,
 		char* pattern, char* ckpt_dir_fqdn) {
 	int error;
-	glob_t globbuf;
+	glob_t globbuf= {0};
+	int initial_commit =0;
 
 	if (glob(pattern, GLOB_ONLYDIR, NULL, &globbuf) != 0) {
 		git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
@@ -397,11 +398,7 @@ void get_git_repository(char* ckpt_file_name, git_repository** repo,
 		strcat(web_url, ".git");
 		set_remote_url(*repo);
 
-		char data[MAX_STRING_LEN] = { 0 };
-		snprintf(data, MAX_STRING_LEN, "name:%s&url:%s", ckpt_file_name,
-				web_url);
-		http_post_message(data,
-				"http://ec2-54-152-136-159.compute-1.amazonaws.com:3000/sync/init");
+		initial_commit = 1;
 
 	} else if (globbuf.gl_pathc == 1) {
 		strncpy(ckpt_dir_fqdn, globbuf.gl_pathv[0], MAX_STRING_LEN);
@@ -416,6 +413,7 @@ void get_git_repository(char* ckpt_file_name, git_repository** repo,
 	}
 
 	globfree(&globbuf);
+	return initial_commit;
 }
 
 void checkpoint() {
@@ -424,7 +422,8 @@ void checkpoint() {
 	meta_data_t meta_data = { 0 };
 	ucontext_t cpu_context = { 0 };
 	git_repository *repo = NULL;
-	git_oid oid_blob; /* the SHA1 for our blob in the tree */
+	int initial_commit = 0;
+	git_oid oid_blob= {.id= {0} }; /* the SHA1 for our blob in the tree */
 	int error;
 	char ckpt_dir_fqdn[MAX_STRING_LEN] = { 0 }, ckpt_file_name[MAX_STRING_LEN] =
 			{ 0 }, pattern[MAX_STRING_LEN] = { 0 };
@@ -437,7 +436,7 @@ void checkpoint() {
 			ckpt_file_name);
 	snprintf(pattern, MAX_STRING_LEN, "/tmp/ckpt_%d_*", getpid());
 
-	get_git_repository(ckpt_file_name, &repo, pattern, ckpt_dir_fqdn);
+	initial_commit = get_git_repository(ckpt_file_name, &repo, pattern, ckpt_dir_fqdn);
 
 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
 		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
@@ -495,15 +494,21 @@ void checkpoint() {
 
 	commit_changes(repo);
 	push_to_remote_repo(repo);
+	if(initial_commit){
+		char data[MAX_STRING_LEN] = { 0 };
+		snprintf(data, MAX_STRING_LEN, "name=%s&url=%s", ckpt_file_name,
+				web_url);
+		http_post_message(data,
+				"http://ec2-54-152-136-159.compute-1.amazonaws.com:3000/sync/init");
+	}
+
 	fclose(in_fd);
 
 	return;
 }
 
 void handle_checkpointing(int sig_no) {
-	git_libgit2_init();
 	checkpoint();
-	git_libgit2_shutdown();
 }
 
 void get_ckpt_filename(char* file_name){
@@ -526,7 +531,7 @@ void handle_live_migration(int sig_no) {
 
 	char data[MAX_STRING_LEN] = { 0 }, ckpt_file_name[MAX_STRING_LEN] ={0};
 	get_ckpt_filename(ckpt_file_name);
-	snprintf(data, MAX_STRING_LEN, "name:%s&url:%s", ckpt_file_name , web_url);
+	snprintf(data, MAX_STRING_LEN, "name=%s&url=%s", ckpt_file_name , web_url);
 	http_post_message(data,
 			"http://ec2-54-152-136-159.compute-1.amazonaws.com:3000/sync/restart");
 
@@ -535,5 +540,6 @@ void handle_live_migration(int sig_no) {
 __attribute__((constructor))void myconstructor() {
 	signal(SIGUSR2, handle_checkpointing);
 	signal(SIGUSR1, handle_live_migration);
+	git_libgit2_init();
 
 }

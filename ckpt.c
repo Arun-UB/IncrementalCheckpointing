@@ -416,7 +416,7 @@ int get_git_repository(char* ckpt_file_name, git_repository** repo,
 	return initial_commit;
 }
 
-void checkpoint() {
+int checkpoint() {
 	FILE *in_fd = NULL;
 	char buffer[1024] = { 0 };
 	meta_data_t meta_data = { 0 };
@@ -441,7 +441,7 @@ void checkpoint() {
 	if ((in_fd = fopen("/proc/self/maps", "r")) == NULL) {
 		printf("\nERROR: Failed to open /proc/self/maps: %s\n",
 				strerror(errno));
-		return;
+		return -1;
 	}
 
 	while ((fgets(buffer, 1024, in_fd) > 0)) {
@@ -475,12 +475,12 @@ void checkpoint() {
 	if (getcontext(&cpu_context) != 0) {
 		printf("\nERROR: Failed to get CPU Context %d\n", errno);
 		fclose(in_fd);
-		return;
+		return -1;
 	}
 
 	ucontext_t tmp_context = { 0 };
 	if (!memcmp(&cpu_context, &tmp_context, sizeof(ucontext_t))) {
-		return;
+		return -1;
 	}
 
 	char output_file[128] = { 0 };
@@ -504,7 +504,7 @@ void checkpoint() {
 
 	fclose(in_fd);
 
-	return;
+	return 0;
 }
 
 void handle_checkpointing(int sig_no) {
@@ -527,7 +527,8 @@ void get_ckpt_filename(char* file_name){
 }
 
 void handle_live_migration(int sig_no) {
-	checkpoint();
+	if( checkpoint() == -1)
+		return;
 
 	char data[MAX_STRING_LEN] = { 0 }, ckpt_file_name[MAX_STRING_LEN] ={0};
 	get_ckpt_filename(ckpt_file_name);

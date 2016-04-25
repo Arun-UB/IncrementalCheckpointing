@@ -19,17 +19,22 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({"extended" : false}));
 
 router.route("/sync/init").post(function (req,res) {
-  var name = req.body.name;
 
+  var name = req.body.name;
+  logger.log(name);
+  logger.log(req.body);
+  logger.log(req.query);
+  logger.log(req.params);
   if(!name){
     res.status(500).json({error :"Invalid repository name"});
   }
 
   else{
+    res.sendStatus(200);
     var repoPath = path.join("/tmp",name);
     var repoName = repoRoot + "root/"+name+".git";
-    logger.log(repoName)
-    logger.log(repoPath)
+    // logger.log(repoName)
+    // logger.log(repoPath)
     fse.remove(repoPath).then(function() {
       nodegit.Clone(repoName,repoPath).then(function(repo) {
           return repo;
@@ -39,8 +44,8 @@ router.route("/sync/init").post(function (req,res) {
             host: req.get('host'),
             pathname: "sync/hook"
           });
-          logger.log(hook);
-          logger.log(repoRoot+encodeURIComponent(repoName)+"/hooks");
+          // logger.log(hook);
+          // logger.log(repoRoot+encodeURIComponent(repoName)+"/hooks");
           var options = {
             url:repoRoot+"api/v3/projects/"+encodeURIComponent("root/"+name)+"/hooks",
             method:'POST',
@@ -50,13 +55,15 @@ router.route("/sync/init").post(function (req,res) {
            }
          }
          request(options,function(err,res){
+          // console.log(res)
           if(err){
             logger.log(err);
           }
-        });
+        })
+
        }).catch(function (err) {
         logger.log(err);
-        res.status(500).json({error :"Something went wrong!"});
+        // res.status(500).json({error :"Something went wrong!"});
       });
      });  
   }
@@ -66,28 +73,30 @@ router.route("/sync/init").post(function (req,res) {
 
 router.route("/sync/hook").post(function(req,res){
 
+  res.sendStatus(200);
   var name = req.body.project.name;
   var repoPath = path.join("/tmp",name);
+  logger.log(repoPath)
   // Open a repository that needs to be fetched and fast-forwarded
-  nodegit.Repository.open(path.resolve(__dirname,repoPath))
+  nodegit.Repository.open(repoPath)
   .then(function(repo) {
     repository = repo;
-    logger.log(repository);
-    return repository.fetchAll();
-  })
-    // Now that we're finished fetching, go ahead and merge our local branch
-    // with the new one
-    .then(function() {
-      return repository.mergeBranches("master", "origin/master");
-    })
-    .catch(function(err) {
+    repository.fetchAll().then(function() {
+      logger.log(repository.path());
+      var boolean = repository.isMerging();
+      logger.log(boolean)
+      repository.mergeBranches("master", "origin/master");
+    });
+  }).catch(function(err) {
       logger.log(err);
     });
   });
 
 router.route("/sync/restart").post(function(req,res){
+  res.sendStatus(200);
   var name = req.body.name.trim();
   var repoPath = path.join("/tmp",name);
+
   // logger.log(path)
   // Open a repository that needs to be fetched and fast-forwarded
   nodegit.Repository.open(repoPath)
@@ -106,11 +115,19 @@ router.route("/sync/restart").post(function(req,res){
       
       // logger.log(path+name)
       var execFile = require('child_process').execFile;
-      execFile("/home/ubuntu/libgit2-0.24.1/IncrementalCheckpointing/myrestart",[repoPath], function(error, stdout, stderr) {
-        logger.log(stdout)
-        if(error)
+      var child = execFile("/home/ubuntu/IncrementalCheckpointing/myrestart",[repoPath],{}, function(error, stdout, stderr) {
+        if(stderr)
+	  logger.log(stderr)
+
+        if(stdout)
+	  logger.log(stdout)
+        
+	if(error)
           logger.log(error)
       });
+	child.stdout.on('data', function(data) {
+    		logger.log(data.toString()); 
+	});
 
     })
     .catch(function(err) {
